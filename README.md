@@ -1,2 +1,2 @@
-# thesis
+# Thesis
 Honors Thesis Scripts
