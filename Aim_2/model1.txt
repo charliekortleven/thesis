@@ -1,0 +1,134 @@
+
+#set wd
+setwd("C://Users//Charlie Kortleven//Desktop//Senior Thesis//Aim_2//GeneCounts//gene_counts_per_sample")
+
+#import packages + load libraries
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  +     install.packages("BiocManager")
+BiocManager::install("DESeq2")
+
+BiocManager::install("limma")
+BiocManager::install("openxlsx")
+BiocManager::install("DESeq2")
+BiocManager::install("ggplot2")
+BiocManager::install("ggrepel")
+BiocManager::install("pheatmap")
+BiocManager::install("airway")
+BiocManager::install("tidyverse")
+
+library(pheatmap)
+library(limma)
+library(DESeq2)
+library(ggplot2)
+library(ggrepel)
+library(tidyverse)
+library(openxlsx)
+
+#read in data
+sampleData = read.xlsx("sampleData.xlsx")
+sampleData = as.data.frame(sampleData)
+rownames(sampleData) = sampleData$sample_id
+sampleData$population = sampleData$individual
+sampleData$individual= NULL
+
+#rows are gene columns are sample ID
+count_matrix = read.csv("count_matrix.csv", row.names=1)
+countData = as.data.frame(count_matrix)
+
+#ensure all row names match colnames
+all(colnames(countData) %in% rownames(sampleData))
+
+#ensure they are in the same order
+all(colnames(countData) == rownames(sampleData))
+
+#model 2: pop + batch + cond + pop:cond
+#question: "how does the effect of HC vary across populations?"
+
+#if we dont specify reference levels DESeq2 will choose based on alpha-order
+  
+dds_cond_effect_pop <- DESeqDataSetFromMatrix(
+    countData = countData, 
+    colData = sampleData, 
+    design = ~ population + batch + condition + condition:population
+  )
+
+
+#get rid of genes will very low read count
+keep = rowSums(counts(dds_cond_effect_pop)) >= 10
+dds_cond_effect_pop = dds_cond_effect_pop[keep, ]
+
+#compare HC against baseline CC
+dds_cond_effect_pop$condition <- as.factor(dds_cond_effect_pop$condition)
+dds_cond_effect_pop$condition <- relevel(dds_cond_effect_pop$condition, ref = "CC")
+
+#compare other populations against baseline SHL
+dds_cond_effect_pop$population <- as.factor(dds_cond_effect_pop$population)
+dds_cond_effect_pop$population <- relevel(dds_cond_effect_pop$population, ref = "SHL")
+
+#run DESeq
+dds_cond_effect_pop = DESeq(dds_cond_effect_pop)
+resultsNames = resultsNames(dds_cond_effect_pop)
+
+#explore results where pop: HHR vs. SHL, in HC
+res_hhr_vs_shl_in_HC <- results(dds_cond_effect_pop, list(c("population_HHR_vs_SHL", "populationHHR.conditionHC")))
+
+#make a heatmap w/ top 10
+
+#explore results where pop: HHR vs. SHL, in HC
+res_hhr_vs_shl_in_HC_ordered <- res_hhr_vs_shl_in_HC[order(res_hhr_vs_shl_in_HC$padj), ]
+
+#top 10 hits
+top_hits = res_hhr_vs_shl_in_HC_ordered[1:10, ]
+top_hits_gene_names = rownames(top_hits)
+top_hits_gene_names
+
+#rlog/vsd (vsd better for > 30 samples)
+vst <- vst(dds_cond_effect_pop, blind = FALSE)
+
+subset_samples <- colData(dds_cond_effect_pop)$population %in% c("HHR", "SHL") &
+  colData(dds_cond_effect_pop)$condition == "HC"
+
+annot_info <- as.data.frame(colData(dds_cond_effect_pop)[subset_samples, "population", drop = FALSE])
+colnames(annot_info) <- "Population"
+rownames(annot_info) <- rownames(colData(dds_cond_effect_pop))[subset_samples]
+
+vst_subset <- vst[, subset_samples]
+
+pheatmap(assay(vst_subset)[top_hits_gene_names, ],
+         cluster_rows = TRUE,
+         show_rownames = TRUE,
+         cluster_cols = FALSE,
+         annotation_col = annot_info)
+
+#now determine the gene names using annotations
+
+annotations <- read.table("Mnasutusvar_SF_822_v2.1.annotation_info (1).txt",
+                          header = TRUE,
+                          sep = "\t",
+                          stringsAsFactors = FALSE,
+                          fill = TRUE,
+                          quote = "")
+
+#remove .v2.1 from top hit genes
+top_hits_clean <- gsub("\\.v2\\.1$", "", top_hits_gene_names)
+top_hits_clean
+
+#get metadata (padj, logfold, etc)
+# Match by full gene names (still include .v2.1 for now)
+top_hits_metadata <- res_hhr_vs_shl_in_HC[top_hits_gene_names, ]
+
+#add gene names to metadata
+top_hits_metadata$gene_id_clean <- gsub("\\.v2\\.1$", "", rownames(top_hits_metadata))
+matched_annotations_SHL_vs_HHR_HC <- annotations[match(top_hits_metadata$gene_id_clean, annotations[, 2]), ]
+
+combined_output <- cbind(top_hits_metadata, matched_annotations_SHL_vs_HHR_HC)
+
+#sanity check to make sure they match
+nrow(top_hits_metadata) ==  nrow(matched_annotations_SHL_vs_HHR_HC)
+
+write.csv(combined_output, "annotations_SHL_vs_HHR_HC.csv")
+
+
+
+
+
